@@ -14,7 +14,16 @@ from src import (
     MovieProcessingReport,
 )
 from src.storage import MOVIE_COLUMNS
+from src import (
+    MovieStorage,
+    MovieCache,
+    MovieUploadInfo,
+    MovieDataResponse,
+    MovieProcessingReport,
+)
 
+storage = MovieStorage()
+cache = MovieCache()
 
 setup_logging(verbose=True)
 logger = logging.getLogger(__name__)
@@ -67,6 +76,7 @@ async def upload_movies(file: UploadFile = File(...)):
 
     # TODO 3: save and return
     storage.save(df)
+    cache.invalidate()
     logger.info(f"Stored {len(df)} movies from {filename}")
 
     return MovieUploadInfo(
@@ -80,15 +90,24 @@ async def upload_movies(file: UploadFile = File(...)):
 @app.get("/movies", response_model=MovieDataResponse)
 def get_movies(limit: int = Query(default=100, ge=1)):
     """Return up to limit stored movies and the total count."""
+    # TODO 1: check the cache first
+    cached = cache.get(limit)
+    if cached is not None:
+        logger.info(f"Cache hit for /movies with limit={limit}")
+        return cached
+
+    # Part 1's SQL retrieval and response construction
     total_rows = storage.count_movies()
     if total_rows == 0:
-        logger.info("No movies stored; returning empty result")
-        return {"data": [], "total_rows": 0}
+        response = {"data": [], "total_rows": 0}
+    else:
+        data = storage.select_columns(MOVIE_COLUMNS, limit=limit)
+        response = {"data": data, "total_rows": total_rows}
 
-    data = storage.select_columns(MOVIE_COLUMNS, limit=limit)
-    logger.info(f"Returning {len(data)} of {total_rows} movies")
-
-    return {"data": data, "total_rows": total_rows}
+    # TODO 2: cache the response, then log and return
+    cache.set(limit, response)
+    logger.info(f"Returning {len(response['data'])} of {total_rows} movies")
+    return response
 
 
 @app.get("/movies/search", response_model=list[dict])
@@ -148,6 +167,7 @@ def process_movies(config: ProcessConfig):
 
     # TODO 3: save and return (no dataset ID)
     storage.save(processed_df)
+    cache.invalidate()
     logger.info("Stored processed movies")
 
     return {
